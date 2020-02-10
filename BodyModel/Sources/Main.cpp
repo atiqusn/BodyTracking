@@ -41,9 +41,14 @@ namespace {
 	const int numOfEndEffectors = 8;
 	
 	Logger* logger;
+	Logger* logger2;
 	
 	double startTime;
 	double lastTime;
+
+
+	int myHelper = 0;
+	int avatar2AnimationStage = 0;
 	
 	// Audio cues
 	Sound* startRecordingSound;
@@ -59,6 +64,17 @@ namespace {
 	ConstantLocation pLocation;
 	ConstantLocation vLocation;
 	ConstantLocation mLocation;
+
+	// Avatar2 shader
+	VertexStructure structure2;
+	Shader* vertexShader2;
+	Shader* fragmentShader2;
+	PipelineState* pipeline2;
+
+	TextureUnit tex2;
+	ConstantLocation pLocation2;
+	ConstantLocation vLocation2;
+	ConstantLocation mLocation2;
 	
 	// Living room shader
 	VertexStructure structure_living_room;
@@ -90,17 +106,20 @@ namespace {
 	// Null terminated array of MeshObject pointers (Vive Controller and Tracker)
 	MeshObject* viveObjects[] = { nullptr, nullptr, nullptr };
 	Avatar* avatar;
+	Avatar* avatar2;
 	LivingRoom* livingRoom;
 	
 	// Variables to mirror the room and the avatar
 	vec3 mirrorOver(6.057f, 0.0f, 0.04f);
 	
 	mat4 initTrans;
+	mat4 initTrans2;
 	mat4 initTransInv;
 	Kore::Quaternion initRot;
 	Kore::Quaternion initRotInv;
 	
 	bool calibratedAvatar = false;
+	bool avatar2Animate = true;
 	
 #ifdef KORE_STEAMVR
 	bool controllerButtonsInitialized = false;
@@ -222,6 +241,22 @@ namespace {
 		Graphics4::setMatrix(mLocation, initTransMirror);
 		avatar->animate(tex);
 	}
+
+	void renderAvatar2(mat4 V, mat4 P) {
+		Graphics4::setPipeline(pipeline2);
+
+		Graphics4::setMatrix(vLocation2, V);
+		Graphics4::setMatrix(pLocation2, P);
+		Graphics4::setMatrix(mLocation2, initTrans2);
+		avatar2->animate(tex2);
+
+		// Mirror the avatar
+		//mat4 initTransMirror = getMirrorMatrix() * initTrans;
+
+		//Graphics4::setMatrix(mLocation2, initTransMirror);
+		//avatar->animate(tex2);
+	}
+
 	
 	Kore::mat4 getProjectionMatrix() {
 		mat4 P = mat4::Perspective(45, (float)width / (float)height, 0.01f, 1000);
@@ -262,6 +297,33 @@ namespace {
 			}
 		}
 	}
+
+	void executeMovement2(int endEffectorID, float offsetX, float offsetZ) {
+		Kore::vec3 desPosition = endEffector[endEffectorID]->getDesPosition();
+		Kore::Quaternion desRotation = endEffector[endEffectorID]->getDesRotation();
+
+		
+		// Transform desired position/rotation to the character local coordinate system
+		desPosition = initTransInv * vec4(desPosition.x()+offsetX, desPosition.y(), desPosition.z()+offsetZ, 1);
+		desRotation = initRotInv.rotated(desRotation);
+
+		// Add offset
+		Kore::Quaternion offsetRotation = endEffector[endEffectorID]->getOffsetRotation();
+		vec3 offsetPosition = endEffector[endEffectorID]->getOffsetPosition();
+		Kore::Quaternion finalRot = desRotation.rotated(offsetRotation);
+		vec3 finalPos = mat4::Translation(desPosition.x(), desPosition.y(), desPosition.z()) * finalRot.matrix().Transpose() * mat4::Translation(offsetPosition.x(), offsetPosition.y(), offsetPosition.z()) * vec4(0, 0, 0, 1);
+
+		if (endEffectorID == hip) {
+			avatar2->setFixedPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), finalPos, finalRot);
+		}
+		else if (endEffectorID == head || endEffectorID == leftForeArm || endEffectorID == rightForeArm || endEffectorID == leftFoot || endEffectorID == rightFoot) {
+			avatar2->setDesiredPositionAndOrientation(endEffector[endEffectorID]->getBoneIndex(), endEffector[endEffectorID]->getIKMode(), finalPos, finalRot);
+		}
+		else if (endEffectorID == leftHand || endEffectorID == rightHand) {
+			avatar2->setFixedOrientation(endEffector[endEffectorID]->getBoneIndex(), finalRot);
+		}
+		
+	}
 	
 	void initTransAndRot() {
 		initRot = Kore::Quaternion(0, 0, 0, 1);
@@ -272,6 +334,7 @@ namespace {
 		
 		vec3 initPos = vec4(0, 0, 0, 1);
 		initTrans = mat4::Translation(initPos.x(), initPos.y(), initPos.z()) * initRot.matrix().Transpose();
+		initTrans2 = initTrans;
 		initTransInv = initTrans.Invert();
 	}
 	
@@ -450,6 +513,7 @@ namespace {
 		Graphics4::begin();
 		Graphics4::clear(Graphics4::ClearColorFlag | Graphics4::ClearDepthFlag, Graphics1::Color::Black, 1.0f, 0);
 		Graphics4::setPipeline(pipeline);
+		Graphics4::setPipeline(pipeline2);
 		
 #ifdef KORE_STEAMVR
 		VrInterface::begin();
@@ -587,13 +651,31 @@ namespace {
 				}
 			}
 		}
+
+		if (avatar2Animate) {
+			char* avatar2Filename = "yoga2k.csv";
+			while(logger2->readData(numOfEndEffectors, avatar2Filename, desPosition, desRotation, scaleFactor)){
+				for (int i = 0; i < numOfEndEffectors; ++i) {
+					endEffector[i]->setDesPosition(desPosition[i]);
+					endEffector[i]->setDesRotation(desRotation[i]);
+				}
+				for (int i = 0; i < numOfEndEffectors; ++i) {
+					executeMovement2(i, 0.50f, 1.0f);
+				}
+			}
+			avatar2Animate = false;
+			//avatar2->setScale(1.0);
+		}
 		
 		// Get projection and view matrix
 		mat4 P = getProjectionMatrix();
 		mat4 V = getViewMatrix();
 		
 		renderAvatar(V, P);
-		
+		renderAvatar2(V, P);
+
+
+
 		if (renderTrackerAndController) renderAllVRDevices();
 		
 		if (renderAxisForEndEffector) renderCSForEndEffector();
@@ -693,7 +775,6 @@ namespace {
 		structure.add("nor", Float3VertexData);
 		
 		pipeline = new PipelineState();
-		pipeline = new PipelineState();
 		pipeline->inputLayout[0] = &structure;
 		pipeline->inputLayout[1] = nullptr;
 		pipeline->vertexShader = vertexShader;
@@ -713,6 +794,39 @@ namespace {
 		pLocation = pipeline->getConstantLocation("P");
 		vLocation = pipeline->getConstantLocation("V");
 		mLocation = pipeline->getConstantLocation("M");
+	}
+
+	void loadAvatarShader2() {
+		FileReader vs("shader2.vert");
+		FileReader fs("shader2.frag");
+		vertexShader = new Shader(vs.readAll(), vs.size(), VertexShader);
+		fragmentShader = new Shader(fs.readAll(), fs.size(), FragmentShader);
+
+		// This defines the structure of your Vertex Buffer
+		structure2.add("pos", Float3VertexData);
+		structure2.add("tex", Float2VertexData);
+		structure2.add("nor", Float3VertexData);
+
+		pipeline2 = new PipelineState();
+		pipeline2->inputLayout[0] = &structure2;
+		pipeline2->inputLayout[1] = nullptr;
+		pipeline2->vertexShader = vertexShader;
+		pipeline2->fragmentShader = fragmentShader;
+		pipeline2->depthMode = ZCompareLess;
+		pipeline2->depthWrite = true;
+		pipeline2->blendSource = Graphics4::SourceAlpha;
+		pipeline2->blendDestination = Graphics4::InverseSourceAlpha;
+		pipeline2->alphaBlendSource = Graphics4::SourceAlpha;
+		pipeline2->alphaBlendDestination = Graphics4::InverseSourceAlpha;
+		pipeline2->compile();
+
+		tex2 = pipeline2->getTextureUnit("tex");
+		Graphics4::setTextureAddressing(tex2, Graphics4::U, Repeat);
+		Graphics4::setTextureAddressing(tex2, Graphics4::V, Repeat);
+
+		pLocation2 = pipeline2->getConstantLocation("P");
+		vLocation2 = pipeline2->getConstantLocation("V");
+		mLocation2 = pipeline2->getConstantLocation("M");
 	}
 	
 	void loadLivingRoomShader() {
@@ -755,7 +869,9 @@ namespace {
 	
 	void init() {
 		loadAvatarShader();
-        avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure);
+		loadAvatarShader2();
+		avatar = new Avatar("avatar/avatar_male.ogex", "avatar/", structure);
+		avatar2 = new Avatar("avatar/avatar_male.ogex", "avatar/", structure2);
 		//avatar = new Avatar("avatar/avatar_female.ogex", "avatar/", structure);
 		
 		initTransAndRot();
@@ -794,6 +910,7 @@ namespace {
 		}
 		
 		logger = new Logger();
+		logger2 = new Logger();
 		
 		endEffector = new EndEffector*[numOfEndEffectors];
 		endEffector[head] = new EndEffector(headBoneIndex);
@@ -811,7 +928,7 @@ namespace {
 	}
 }
 
-int kore(int argc, char** argv) {
+int kickstart(int argc, char** argv) {
 	System::init("BodyTracking", width, height);
 	
 	init();
